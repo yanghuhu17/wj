@@ -1,6 +1,8 @@
 #!/bin/bash
 
+# ---------------------------
 # 随机生成端口和密码
+# ---------------------------
 [ -z "$HY2_PORT" ] && HY2_PORT=$(shuf -i 2000-65000 -n 1)
 [ -z "$PASSWD" ] && PASSWD=$(cat /proc/sys/kernel/random/uuid)
 
@@ -32,17 +34,22 @@ esac
 
 $package_install openssl wget curl unzip jq
 
-# ---------------------------
-# 安装 Hysteria 2
-# ---------------------------
-bash <(curl -fsSL https://get.hy2.sh/) || {
-  echo -e "\033[1;35mHysteria2 安装失败\033[0m"
-  exit 1
-}
+# ============================================================
+# 安装 Hysteria2：不使用 get.hy2.sh → 兼容 Alpine
+# ============================================================
+echo -e "\n\033[1;32m正在下载 Hysteria2 ...\033[0m"
 
-# ---------------------------
-# 生成自签证书（兼容 Alpine）
-# ---------------------------
+HY2_VER=$(curl -s https://api.github.com/repos/apernet/hysteria/releases/latest | jq -r .tag_name)
+HY2_URL="https://github.com/apernet/hysteria/releases/download/${HY2_VER}/hysteria-linux-amd64"
+
+wget -O /usr/bin/hysteria "$HY2_URL"
+chmod +x /usr/bin/hysteria
+
+echo -e "\033[1;32mHysteria2 安装完成（手动方式，兼容 Alpine）\033[0m"
+
+# ============================================================
+# 生成证书
+# ============================================================
 mkdir -p /etc/hysteria
 
 openssl ecparam -genkey -name prime256v1 -out /etc/hysteria/server.key
@@ -53,9 +60,9 @@ openssl req -x509 -new -key /etc/hysteria/server.key \
 chmod 600 /etc/hysteria/server.key
 chmod 644 /etc/hysteria/server.crt
 
-# ---------------------------
+# ============================================================
 # 生成配置文件
-# ---------------------------
+# ============================================================
 cat << EOF > /etc/hysteria/config.yaml
 listen: :$HY2_PORT
 
@@ -80,21 +87,51 @@ transport:
     hopInterval: 30s
 EOF
 
-# ---------------------------
-# 启动服务（自动识别 systemd / OpenRC）
-# ---------------------------
+# ============================================================
+# 安装服务：自动识别 systemd / OpenRC (Alpine)
+# ============================================================
 if command -v systemctl >/dev/null 2>&1; then
-    systemctl restart hysteria-server.service
-    systemctl enable hysteria-server.service
+    echo -e "\033[1;32m安装 systemd 服务 ...\033[0m"
+
+    cat << EOF > /etc/systemd/system/hysteria-server.service
+[Unit]
+Description=Hysteria2 Server
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/hysteria server -c /etc/hysteria/config.yaml
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl restart hysteria-server
+    systemctl enable hysteria-server
 else
-    # Alpine / openrc
-    rc-service hysteria restart 2>/dev/null || rc-service hysteria start
+    # Alpine OpenRC
+    echo -e "\033[1;32m安装 OpenRC 服务 (Alpine) ...\033[0m"
+
+    cat << 'EOF' > /etc/init.d/hysteria
+#!/sbin/openrc-run
+command="/usr/bin/hysteria"
+command_args="server -c /etc/hysteria/config.yaml"
+pidfile="/run/hysteria.pid"
+name="hysteria"
+depend() {
+    need net
+}
+EOF
+
+    chmod +x /etc/init.d/hysteria
     rc-update add hysteria default
+    rc-service hysteria restart
 fi
 
-# ---------------------------
-# 获取主机 IP
-# ---------------------------
+# ============================================================
+# 获取公网 IP
+# ============================================================
 ipv4=$(curl -s ipv4.ip.sb)
 ipv6=$(curl -s --max-time 1 ipv6.ip.sb)
 
@@ -109,17 +146,17 @@ fi
 
 echo -e "\033[1;32m本机 IP：$HOST_IP\033[0m"
 
-# ---------------------------
-# 获取 ISP 信息（使用 jq 更安全）
-# ---------------------------
+# ============================================================
+# ISP 信息
+# ============================================================
 META=$(curl -s https://speed.cloudflare.com/meta)
 ASN=$(echo "$META" | jq -r .asnName | sed 's/ /_/g')
 CITY=$(echo "$META" | jq -r .city | sed 's/ /_/g')
 ISP="${ASN}-${CITY}"
 
-# ---------------------------
-# 输出配置信息
-# ---------------------------
+# ============================================================
+# 输出
+# ============================================================
 echo -e "\n\033[1;32mHysteria2 安装成功！\033[0m"
 
 echo -e "\n\033[1;33mV2rayN / Nekobox\033[0m"
